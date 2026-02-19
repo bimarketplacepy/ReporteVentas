@@ -14,7 +14,7 @@ def check_password():
     def password_entered():
         if st.session_state["password"] == st.secrets["password"]:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Borrar pass por seguridad
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
@@ -40,19 +40,21 @@ def load_data():
     # 3.1 Leer datos históricos (TD_Anual_Data)
     ws_anual = sh.worksheet("TD_Anual_Data")
     df = pd.DataFrame(ws_anual.get_all_records())
+    
+    # CORRECCIÓN AQUÍ: TICKET_PROM_MENSUAL_DATO (sin la palabra 'EDIO')
     cols_numericas = ['TOTAL_VENTA_DIARIA_GS', 'UTILIDAD_BRUTA_DIARIA_GS', 
                       'CANT_TICKETS_DIARIOS', 'NRO_VISITAS_DIARIAS', 
-                      'TICKET_PROMEDIO_MENSUAL_DATO']
+                      'TICKET_PROM_MENSUAL_DATO']
+    
     for col in cols_numericas:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
             
-    # Convertir fecha y SOLUCIÓN AL ERROR: Recrear las columnas 'anio' y 'mes'
     df['fecha'] = pd.to_datetime(df['fecha'])
     df['anio'] = df['fecha'].dt.year
     df['mes'] = df['fecha'].dt.month
 
-    # 3.2 Leer KPIs Complejos (Para las nuevas pestañas)
+    # 3.2 Leer KPIs Complejos
     try:
         ws_kpis = sh.worksheet("KPIs_Complejos")
         df_kpis = pd.DataFrame(ws_kpis.get_all_records())
@@ -124,13 +126,13 @@ if check_password():
         # 2. SISTEMA DE PESTAÑAS (TUS 2 ORIGINALES + LAS 5 NUEVAS)
         # =====================================================================
         tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-            "📈 Ventas Diarias",           # Tuya original 1
-            "👥 Ticket vs Visitas",        # Tuya original 2
-            "1️⃣ Resumen (KPIs)",           # Nueva 1
-            "2️⃣ Ventas y Rentabilidad",    # Nueva 2
-            "3️⃣ Operaciones y Clientes",   # Nueva 3
-            "4️⃣ Inventario",               # Nueva 4
-            "5️⃣ Medias (14 Días)"          # Nueva 5
+            "📈 Ventas Diarias",           
+            "👥 Ticket vs Visitas",        
+            "1️⃣ Resumen (KPIs)",           
+            "2️⃣ Ventas y Rentabilidad",    
+            "3️⃣ Operaciones y Clientes",   
+            "4️⃣ Inventario",               
+            "5️⃣ Medias (14 Días)"          
         ])
 
         # --- PESTAÑAS ORIGINALES ---
@@ -218,9 +220,11 @@ if check_password():
                 
             with c_op2:
                 st.subheader("Tickets vs Monto Promedio")
+                
+                # CORRECCIÓN AQUÍ TAMBIÉN: TICKET_PROM_MENSUAL_DATO
                 fig_tck = go.Figure()
                 fig_tck.add_trace(go.Bar(x=df_90['fecha'], y=df_90['CANT_TICKETS_DIARIOS'], name='Cant. Tickets', yaxis='y1'))
-                fig_tck.add_trace(go.Scatter(x=df_90['fecha'], y=df_90['TICKET_PROMEDIO_MENSUAL_DATO'], name='Monto Ticket', yaxis='y2', line=dict(color='red')))
+                fig_tck.add_trace(go.Scatter(x=df_90['fecha'], y=df_90['TICKET_PROM_MENSUAL_DATO'], name='Monto Ticket', yaxis='y2', line=dict(color='red')))
                 fig_tck.update_layout(yaxis=dict(title='Cantidad', side='left'), yaxis2=dict(title='Monto (Gs)', side='right', overlaying='y', showgrid=False))
                 st.plotly_chart(fig_tck, use_container_width=True)
                 
@@ -244,7 +248,6 @@ if check_password():
             if k_qty is not None:
                 i2.metric("Unidades Físicas", f"{k_qty['Anio_Actual']:,.0f}", f"{k_qty['Variacion_Pct']:.2%} vs Año Ant.")
             
-            # Puedes reemplazar este placeholder cuando calcules los SKUs reales en Python
             i3.metric("SKUs Activos", "N/D", "Sin datos en el modelo actual")
 
         # --- NUEVA PESTAÑA 5: MEDIAS (14 DÍAS) Y ALERTAS ---
@@ -258,7 +261,6 @@ if check_password():
                 val = kpi_data['Anio_Actual']
                 media = kpi_data['Anio_Anterior']
                 
-                # Manejo de alertas según el requerimiento (-100% o anómalo)
                 if var <= -0.99:
                     st.error(f"🚨 **ALERTA CRÍTICA - {titulo}:** Caída del {var:.2%}. Valor actual ₲ {val:,.0f} vs Media ₲ {media:,.0f}. Revisar carga de datos.")
                 else:
