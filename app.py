@@ -10,7 +10,6 @@ st.set_page_config(page_title="Reporte Diario Marketplace", layout="wide", page_
 
 # 2. Función de Seguridad (Password)
 def check_password():
-    """Retorna True si el usuario ingresa la contraseña correcta."""
     def password_entered():
         if st.session_state["password"] == st.secrets["password"]:
             st.session_state["password_correct"] = True
@@ -41,10 +40,10 @@ def load_data():
     ws_anual = sh.worksheet("TD_Anual_Data")
     df = pd.DataFrame(ws_anual.get_all_records())
     
-    # CORRECCIÓN AQUÍ: TICKET_PROM_MENSUAL_DATO (sin la palabra 'EDIO')
     cols_numericas = ['TOTAL_VENTA_DIARIA_GS', 'UTILIDAD_BRUTA_DIARIA_GS', 
                       'CANT_TICKETS_DIARIOS', 'NRO_VISITAS_DIARIAS', 
-                      'TICKET_PROM_MENSUAL_DATO']
+                      'TICKET_PROM_MENSUAL_DATO', 'VENTA_ACUM_ANUAL', 'UTILIDAD_ACUM_ANUAL',
+                      'VENTA_ACUM_MENSUAL', 'UTILIDAD_ACUM_MENSUAL', 'VISITAS_ACUM_MENSUAL']
     
     for col in cols_numericas:
         if col in df.columns:
@@ -53,8 +52,9 @@ def load_data():
     df['fecha'] = pd.to_datetime(df['fecha'])
     df['anio'] = df['fecha'].dt.year
     df['mes'] = df['fecha'].dt.month
+    df['dia_num'] = df['fecha'].dt.day
 
-    # 3.2 Leer KPIs Complejos
+    # 3.2 Leer KPIs Complejos (Para inventario foto)
     try:
         ws_kpis = sh.worksheet("KPIs_Complejos")
         df_kpis = pd.DataFrame(ws_kpis.get_all_records())
@@ -98,7 +98,7 @@ if check_password():
 
     if not df_dia.empty:
         # =====================================================================
-        # 1. LA VISTA BASE ORIGINAL (TARJETAS GRANDES)
+        # 1. LA VISTA BASE ORIGINAL (TARJETAS GRANDES DEL DÍA)
         # =====================================================================
         col1, col2, col3, col4 = st.columns(4)
         
@@ -118,12 +118,29 @@ if check_password():
 
         st.markdown("### 📅 Análisis de Datos")
         
-        # Datos para gráficos de 30 días
-        fecha_inicio_30 = fecha_selec - pd.Timedelta(days=30)
-        df_30 = df[(df['fecha'] <= fecha_selec) & (df['fecha'] > fecha_inicio_30)].sort_values('fecha')
+        # =====================================================================
+        # FUNCIONES MATEMÁTICAS DINÁMICAS (Usando TD_Anual_Data)
+        # =====================================================================
+        def obtener_yoy(columna):
+            """Calcula el valor actual, año anterior, % y diferencia para una columna acumulada"""
+            val_actual = df_dia[columna].sum()
+            df_ant = df[(df['anio'] == fecha_selec.year - 1) & (df['mes'] == fecha_selec.month) & (df['dia_num'] == fecha_selec.day)]
+            val_ant = df_ant[columna].sum() if not df_ant.empty else 0
+            var = (val_actual / val_ant - 1) if val_ant > 0 else 0
+            diff = val_actual - val_ant
+            return val_actual, val_ant, var, diff
+
+        def get_visitas_ytd(year, target_date):
+            """Calcula visitas acumuladas del año hasta una fecha exacta (para no depender de mensuales)"""
+            mask = (df['anio'] == year) & (
+                (df['mes'] < target_date.month) | 
+                ((df['mes'] == target_date.month) & (df['dia_num'] <= target_date.day))
+            )
+            return df[mask]['NRO_VISITAS_DIARIAS'].sum()
+
 
         # =====================================================================
-        # 2. SISTEMA DE PESTAÑAS (TUS 2 ORIGINALES + LAS 5 NUEVAS)
+        # 2. SISTEMA DE PESTAÑAS
         # =====================================================================
         tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
             "📈 Ventas Diarias",           
@@ -135,73 +152,82 @@ if check_password():
             "5️⃣ Medias (14 Días)"          
         ])
 
-        # --- PESTAÑAS ORIGINALES ---
+        df_30 = df[(df['fecha'] <= fecha_selec) & (df['fecha'] > (fecha_selec - pd.Timedelta(days=30)))].sort_values('fecha')
+
+        # --- PESTAÑAS ORIGINALES (30 días) ---
         with tab1:
-            fig_v = px.bar(df_30, x='fecha', y='TOTAL_VENTA_DIARIA_GS', 
-                           title="Evolución de Venta Diaria (Últimos 30 días)", text_auto='.2s')
+            fig_v = px.bar(df_30, x='fecha', y='TOTAL_VENTA_DIARIA_GS', title="Evolución de Venta Diaria (Últimos 30 días)", text_auto='.2s')
             fig_v.update_traces(textfont_size=12, textangle=0, textposition="outside", cliponaxis=False, marker_color='#1F497D')
             st.plotly_chart(fig_v, use_container_width=True)
             
         with tab2:
-            fig_mix = px.line(df_30, x='fecha', y=['CANT_TICKETS_DIARIOS', 'NRO_VISITAS_DIARIAS'], 
-                              title="Comparativo Tráfico vs Compra (Últimos 30 días)", markers=True)
+            fig_mix = px.line(df_30, x='fecha', y=['CANT_TICKETS_DIARIOS', 'NRO_VISITAS_DIARIAS'], title="Comparativo Tráfico vs Compra", markers=True)
             st.plotly_chart(fig_mix, use_container_width=True)
 
-        # Función auxiliar para extraer datos de la tabla de KPIs
-        def get_kpi(nombre):
-            if not df_kpis.empty:
-                fila = df_kpis[df_kpis['KPI'] == nombre]
-                if not fila.empty:
-                    return fila.iloc[0]
-            return None
-
-        # --- NUEVA PESTAÑA 1: RESUMEN EJECUTIVO ---
+        # --- NUEVA PESTAÑA 1: RESUMEN EJECUTIVO (ANUAL Y MENSUAL) ---
         with tab3:
-            st.subheader("Indicadores Acumulados del Año")
+            st.subheader("Indicadores Acumulados ANUAL")
+            
+            v_anual_act, v_anual_ant, var_v_anual, diff_v_anual = obtener_yoy('VENTA_ACUM_ANUAL')
+            u_anual_act, u_anual_ant, var_u_anual, diff_u_anual = obtener_yoy('UTILIDAD_ACUM_ANUAL')
+            
+            # MDR Anual se calcula dividiendo la utilidad anual entre la venta anual
+            mdr_anual_act = (u_anual_act / v_anual_act) if v_anual_act > 0 else 0
+            mdr_anual_ant = (u_anual_ant / v_anual_ant) if v_anual_ant > 0 else 0
+            
+            vis_anual_act = get_visitas_ytd(fecha_selec.year, fecha_selec)
+            vis_anual_ant = get_visitas_ytd(fecha_selec.year - 1, fecha_selec)
+            var_vis_anual = (vis_anual_act / vis_anual_ant - 1) if vis_anual_ant > 0 else 0
+            diff_vis_anual = vis_anual_act - vis_anual_ant
+
             c1, c2, c3, c4 = st.columns(4)
-            k_venta = get_kpi("Ventas Anuales")
-            k_util  = get_kpi("Utilidad Bruta Anual")
-            k_vis   = get_kpi("Visitas")
-            k_mdr   = get_kpi("MDR (Margen)")
+            c1.metric("Ventas Anuales", f"₲ {v_anual_act:,.0f}", f"{var_v_anual:.2%} (₲ {diff_v_anual:,.0f})")
+            c2.metric("Utilidad Bruta Anual", f"₲ {u_anual_act:,.0f}", f"{var_u_anual:.2%} (₲ {diff_u_anual:,.0f})")
+            c3.metric("Visitas Acumuladas", f"{vis_anual_act:,.0f}", f"{var_vis_anual:.2%} ({diff_vis_anual:,.0f})")
 
-            if k_venta is not None:
-                c1.metric("Ventas Anuales", f"₲ {k_venta['Anio_Actual']:,.0f}", f"{k_venta['Variacion_Pct']:.2%} vs Ant.")
-            if k_util is not None:
-                c2.metric("Utilidad Bruta", f"₲ {k_util['Anio_Actual']:,.0f}", f"{k_util['Variacion_Pct']:.2%} vs Ant.")
-            if k_vis is not None:
-                c3.metric("Visitas Acumuladas", f"{k_vis['Anio_Actual']:,.0f}", f"{k_vis['Variacion_Pct']:.2%} vs Ant.")
+            # Gráfico Gauge para MDR
+            fig_gauge = go.Figure(go.Indicator(
+                mode="gauge+number+delta",
+                value=mdr_anual_act * 100,
+                title={'text': "Margen de Rentabilidad (MDR)"},
+                delta={'reference': mdr_anual_ant * 100, 'position': "top"},
+                gauge={
+                    'axis': {'range': [None, 50]},
+                    'bar': {'color': "#1F497D"},
+                    'steps': [{'range': [0, 25], 'color': "lightgray"}, {'range': [25, 35], 'color': "gray"}],
+                    'threshold': {'line': {'color': "green", 'width': 4}, 'thickness': 0.75, 'value': 36}
+                }
+            ))
+            fig_gauge.update_layout(height=250, margin=dict(l=10, r=10, t=30, b=10))
+            c4.plotly_chart(fig_gauge, use_container_width=True)
 
-            if k_mdr is not None:
-                mdr_actual = k_mdr['Anio_Actual'] * 100
-                fig_gauge = go.Figure(go.Indicator(
-                    mode="gauge+number+delta",
-                    value=mdr_actual,
-                    title={'text': "Margen de Rentabilidad (MDR)"},
-                    delta={'reference': k_mdr['Anio_Anterior'] * 100, 'position': "top"},
-                    gauge={
-                        'axis': {'range': [None, 50]},
-                        'bar': {'color': "#1F497D"},
-                        'steps': [{'range': [0, 25], 'color': "lightgray"}, {'range': [25, 35], 'color': "gray"}],
-                        'threshold': {'line': {'color': "green", 'width': 4}, 'thickness': 0.75, 'value': 36}
-                    }
-                ))
-                fig_gauge.update_layout(height=250, margin=dict(l=10, r=10, t=30, b=10))
-                c4.plotly_chart(fig_gauge, use_container_width=True)
+            st.divider()
+            
+            st.subheader("Indicadores Acumulados MENSUAL")
+            v_mes_act, v_mes_ant, var_v_mes, diff_v_mes = obtener_yoy('VENTA_ACUM_MENSUAL')
+            u_mes_act, u_mes_ant, var_u_mes, diff_u_mes = obtener_yoy('UTILIDAD_ACUM_MENSUAL')
+            vis_mes_act, vis_mes_ant, var_vis_mes, diff_vis_mes = obtener_yoy('VISITAS_ACUM_MENSUAL')
+            
+            cm1, cm2, cm3 = st.columns(3)
+            cm1.metric("Ventas del Mes", f"₲ {v_mes_act:,.0f}", f"{var_v_mes:.2%} (₲ {diff_v_mes:,.0f})")
+            cm2.metric("Utilidad del Mes", f"₲ {u_mes_act:,.0f}", f"{var_u_mes:.2%} (₲ {diff_u_mes:,.0f})")
+            cm3.metric("Visitas del Mes", f"{vis_mes_act:,.0f}", f"{var_vis_mes:.2%} ({diff_vis_mes:,.0f})")
 
         # --- NUEVA PESTAÑA 2: VENTAS Y RENTABILIDAD ---
         with tab4:
             col_v1, col_v2 = st.columns(2)
             with col_v1:
-                st.subheader("Comparativo Multianual (2022-2026)")
-                df_historico_anual = df.groupby('anio').agg({'TOTAL_VENTA_DIARIA_GS':'sum', 'UTILIDAD_BRUTA_DIARIA_GS':'sum'}).reset_index()
-                fig_multi = px.bar(df_historico_anual, x='anio', y=['TOTAL_VENTA_DIARIA_GS', 'UTILIDAD_BRUTA_DIARIA_GS'], 
+                st.subheader("Comparativo Multianual Exacto (Mismo Día/Mes)")
+                # Filtramos la base de datos exactamente para el mismo día y mes de todos los años
+                df_multianual = df[(df['mes'] == fecha_selec.month) & (df['dia_num'] == fecha_selec.day)]
+                fig_multi = px.bar(df_multianual, x='anio', y=['VENTA_ACUM_ANUAL', 'UTILIDAD_ACUM_ANUAL'], 
                                    barmode='group', labels={'value': 'Guaraníes', 'variable': 'Métrica'},
                                    color_discrete_sequence=['#1F497D', '#2ca02c'])
                 st.plotly_chart(fig_multi, use_container_width=True)
 
             with col_v2:
                 st.subheader("Relación Mensual (Año Actual)")
-                df_meses = df[df['anio'] == df['anio'].max()].groupby('mes').agg({'TOTAL_VENTA_DIARIA_GS':'sum', 'UTILIDAD_BRUTA_DIARIA_GS':'sum'}).reset_index()
+                df_meses = df[df['anio'] == fecha_selec.year].groupby('mes').agg({'TOTAL_VENTA_DIARIA_GS':'sum', 'UTILIDAD_BRUTA_DIARIA_GS':'sum'}).reset_index()
                 fig_combo = go.Figure()
                 fig_combo.add_trace(go.Bar(x=df_meses['mes'], y=df_meses['TOTAL_VENTA_DIARIA_GS'], name='Ventas', marker_color='#1F497D'))
                 fig_combo.add_trace(go.Scatter(x=df_meses['mes'], y=df_meses['UTILIDAD_BRUTA_DIARIA_GS'], name='Utilidad', mode='lines+markers', line=dict(color='red', width=3)))
@@ -220,8 +246,6 @@ if check_password():
                 
             with c_op2:
                 st.subheader("Tickets vs Monto Promedio")
-                
-                # CORRECCIÓN AQUÍ TAMBIÉN: TICKET_PROM_MENSUAL_DATO
                 fig_tck = go.Figure()
                 fig_tck.add_trace(go.Bar(x=df_90['fecha'], y=df_90['CANT_TICKETS_DIARIOS'], name='Cant. Tickets', yaxis='y1'))
                 fig_tck.add_trace(go.Scatter(x=df_90['fecha'], y=df_90['TICKET_PROM_MENSUAL_DATO'], name='Monto Ticket', yaxis='y2', line=dict(color='red')))
@@ -239,37 +263,66 @@ if check_password():
         # --- NUEVA PESTAÑA 4: INVENTARIO ---
         with tab6:
             st.subheader("Fotografía del Stock Actual")
-            k_val = get_kpi("Stock Valorizado")
-            k_qty = get_kpi("Cant. Items Stock")
+            
+            def get_kpi_stock(nombre):
+                if not df_kpis.empty:
+                    fila = df_kpis[df_kpis['KPI'] == nombre]
+                    if not fila.empty:
+                        return fila.iloc[0]
+                return None
+
+            k_val = get_kpi_stock("Stock Valorizado")
+            k_qty = get_kpi_stock("Cant. Items Stock")
+            k_sku = get_kpi_stock("Cant. SKU Stock") # <--- AHORA LEERÁ LA LÍNEA NUEVA QUE AGREGASTE
             
             i1, i2, i3 = st.columns(3)
             if k_val is not None:
                 i1.metric("Valorizado de Salón", f"₲ {k_val['Anio_Actual']:,.0f}", f"{k_val['Variacion_Pct']:.2%} vs Año Ant.")
             if k_qty is not None:
                 i2.metric("Unidades Físicas", f"{k_qty['Anio_Actual']:,.0f}", f"{k_qty['Variacion_Pct']:.2%} vs Año Ant.")
-            
-            i3.metric("SKUs Activos", "N/D", "Sin datos en el modelo actual")
+            if k_sku is not None:
+                i3.metric("SKUs Activos", f"{k_sku['Anio_Actual']:,.0f}", f"{k_sku['Variacion_Pct']:.2%} vs Año Ant.")
+            else:
+                i3.metric("SKUs Activos", "N/D", "Falta agregar a script local")
 
-        # --- NUEVA PESTAÑA 5: MEDIAS (14 DÍAS) Y ALERTAS ---
+        # --- NUEVA PESTAÑA 5: MEDIAS (14 DÍAS) ---
         with tab7:
             st.subheader("Desviación contra Media Móvil (14 días)")
-            st.info("💡 Este panel alerta sobre caídas abruptas en la operativa diaria comparada con el ritmo de las últimas dos semanas.")
+            st.info("💡 Compara el resultado de HOY con el rendimiento promedio de los últimos 14 días.")
             
-            def renderizar_alerta_delta(kpi_data, titulo):
-                if kpi_data is None: return
-                var = kpi_data['Variacion_Pct']
-                val = kpi_data['Anio_Actual']
-                media = kpi_data['Anio_Anterior']
+            # Calculamos las medias directamente aquí
+            df_14 = df[(df['fecha'] > (fecha_selec - pd.Timedelta(days=14))) & (df['fecha'] <= fecha_selec)]
+            
+            def calc_14dias(columna):
+                media = df_14[columna].mean()
+                actual = df_dia[columna].sum()
+                var = (actual / media - 1) if media > 0 else 0
+                return actual, media, var
+
+            def render_alerta(titulo, columna, es_porcentaje=False):
+                actual, media, var = calc_14dias(columna)
+                
+                # Formato de visualización
+                val_txt = f"{actual:.2%}" if es_porcentaje else f"₲ {actual:,.0f}" if actual > 1000 else f"{actual:,.0f}"
+                media_txt = f"{media:.2%}" if es_porcentaje else f"₲ {media:,.0f}" if media > 1000 else f"{media:,.0f}"
                 
                 if var <= -0.99:
-                    st.error(f"🚨 **ALERTA CRÍTICA - {titulo}:** Caída del {var:.2%}. Valor actual ₲ {val:,.0f} vs Media ₲ {media:,.0f}. Revisar carga de datos.")
+                    st.error(f"🚨 **{titulo}:** Caída del {var:.2%}. Actual {val_txt} vs Media {media_txt}.")
                 else:
                     color = "normal" if var > 0 else "inverse"
-                    st.metric(f"{titulo} (Actual vs Media)", f"₲ {val:,.0f}", f"{var:.2%}", delta_color=color)
+                    st.metric(f"{titulo} (Actual vs Media)", f"{val_txt}", f"{var:.2%}", delta_color=color)
+
+            # Mostramos los 6 indicadores que pediste en 3 columnas y 2 filas
+            m1, m2, m3 = st.columns(3)
+            with m1: render_alerta("Ventas Diarias", "TOTAL_VENTA_DIARIA_GS")
+            with m2: render_alerta("Utilidad Diaria", "UTILIDAD_BRUTA_DIARIA_GS")
+            with m3: render_alerta("MDR Diario", "MDR_DIARIO", es_porcentaje=True)
             
-            col_m1, col_m2 = st.columns(2)
-            with col_m1: renderizar_alerta_delta(get_kpi("Media Movil 14 Dias (Ventas)"), "Ventas Diarias")
-            with col_m2: renderizar_alerta_delta(get_kpi("Media Movil 14 Dias (Utilidad)"), "Utilidad Diaria")
+            st.markdown("<br>", unsafe_allow_html=True)
+            m4, m5, m6 = st.columns(3)
+            with m4: render_alerta("Visitas Diarias", "NRO_VISITAS_DIARIAS")
+            with m5: render_alerta("Tickets Diarios", "CANT_TICKETS_DIARIOS")
+            with m6: render_alerta("Ticket Promedio", "TICKET_PROM_MENSUAL_DATO")
 
         # =====================================================================
         # 3. TABLA DE DATOS ORIGINAL AL FINAL
@@ -279,8 +332,8 @@ if check_password():
             st.dataframe(df_30.sort_values('fecha', ascending=False).style.format({
                 'TOTAL_VENTA_DIARIA_GS': '₲ {:,.0f}',
                 'UTILIDAD_BRUTA_DIARIA_GS': '₲ {:,.0f}',
+                'TICKET_PROM_MENSUAL_DATO': '₲ {:,.0f}'
             }))
 
     else:
         st.warning(f"⚠️ No se encontraron datos cargados para la fecha: {fecha_selec.strftime('%d/%m/%Y')}")
-        st.info("Intenta seleccionar una fecha anterior en el menú de la izquierda.")
